@@ -42,20 +42,41 @@ afterEach(() => {
 })
 
 describe('SharedMetricsConsentStrip', () => {
-  it('records the chosen answer on the focused profile', async () => {
+  it('offers two answers, and sharing sets both opt-ins on the focused profile', async () => {
     installGatewayMock({ enabled: false, send: false, decided: false })
 
     render(<SharedMetricsConsentStrip />)
 
-    fireEvent.click(screen.getByRole('button', { name: copy.stripChoices.local }))
+    expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual([
+      copy.stripChoices.share,
+      copy.stripChoices.off,
+      copy.stripDetails
+    ])
+    expect(screen.getByText(copy.stripBody)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: copy.stripChoices.share }))
 
     await waitFor(() =>
       expect(requestGateway).toHaveBeenCalledWith('shared_metrics.set', {
         enabled: true,
-        send: false,
+        send: true,
         first_run: true,
         profile: 'havoc'
       })
     )
+  })
+
+  it('names the reason for each re-ask', () => {
+    // A retired collect-only answer is still collecting (`enabled`); an unseen "No thanks" is not.
+    $sharedMetricsConsent.set({ enabled: true, send: false, decided: false, reask: true })
+    const { unmount } = render(<SharedMetricsConsentStrip />)
+
+    expect(screen.getByText(copy.stripReaskLocalBody)).toBeTruthy()
+    unmount()
+
+    $sharedMetricsConsent.set({ enabled: false, send: false, decided: false, reask: true })
+    render(<SharedMetricsConsentStrip />)
+
+    expect(screen.getByText(copy.stripReaskBody)).toBeTruthy()
   })
 })

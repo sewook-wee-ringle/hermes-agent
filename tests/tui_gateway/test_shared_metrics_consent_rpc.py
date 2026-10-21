@@ -9,6 +9,7 @@ from pathlib import Path
 
 import hermes_yaml as yaml
 
+from hermes_cli.observability.shared_metrics_consent import OFFER_VERSION
 from tui_gateway import server
 
 
@@ -50,7 +51,7 @@ def test_send_without_collection_is_normalized_off_and_closes_the_consent_window
     # send=true alone is refused: collection off withdraws send consent, in config AND in the store.
     assert _call("shared_metrics.set", {"profile": "code", "enabled": False, "send": True}) == {
         "enabled": False, "send": False, "decided": True, "reask": False}
-    assert _shared_metrics(worker) == {"enabled": False, "send": False, "offer_version": 2}
+    assert _shared_metrics(worker) == {"enabled": False, "send": False, "offer_version": OFFER_VERSION}
     [(_, closed)] = _windows(worker)
     assert closed is not None
 
@@ -71,6 +72,16 @@ def test_status_is_undecided_until_a_key_is_written(tmp_path, monkeypatch):
     assert _call("shared_metrics.status", {"profile": "code"}) == {**unasked, "reask": True}
     _call("shared_metrics.set", {"profile": "code", "enabled": False, "send": False})
     assert _call("shared_metrics.status", {"profile": "code"}) == {**unasked, "decided": True}
+
+    # A collect-only answer from before the offer dropped it is offered once more too; the client
+    # tells the two re-asks apart by `enabled`. Sharing settles it.
+    (worker / "config.yaml").write_text(yaml.safe_dump(
+        {"telemetry": {"shared_metrics": {"enabled": True, "send": False, "offer_version": 2}}}), encoding="utf-8")
+    assert _call("shared_metrics.status", {"profile": "code"}) == {
+        "enabled": True, "send": False, "decided": False, "reask": True}
+    _call("shared_metrics.set", {"profile": "code", "enabled": True, "send": True})
+    assert _call("shared_metrics.status", {"profile": "code"}) == {
+        "enabled": True, "send": True, "decided": True, "reask": False}
 
 
 def test_only_the_first_run_answer_records_desktop_setup_completed(tmp_path, monkeypatch):

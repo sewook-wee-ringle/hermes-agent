@@ -134,8 +134,8 @@ export interface Translations {
     sharedMetricsTitle?: string;
     sharedMetricsBody?: string;
     sharedMetricsReaskBody?: string;
+    sharedMetricsReaskLocalBody?: string;
     sharedMetricsShare?: string;
-    sharedMetricsLocal?: string;
     sharedMetricsOff?: string;
     sharedMetricsDetails?: string;
     sharedMetricsSaveFailed?: string;

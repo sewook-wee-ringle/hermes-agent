@@ -16,20 +16,23 @@ import {
   sharedMetricsProfileRequester
 } from '@/store/shared-metrics'
 
-const CHOICES: readonly SharedMetricsChoice[] = ['share', 'local', 'off']
+const CHOICES: readonly SharedMetricsChoice[] = ['share', 'off']
 
 /**
  * The first-run shared-metrics offer, in the composer status stack beside the
  * free-tier strip: it never blocks the composer or takes focus, and it stays
- * until one of the three equal answers is saved (the backend's `decided` is
- * the only latch). "Details" opens the full explainer the host paints.
+ * until one of the two equal answers is saved (the backend's `decided` is
+ * the only latch). A re-ask names its reason: an "off" from before the
+ * type-ahead fix, or a retired collect-only answer (still `enabled`).
+ * "Details" opens the full explainer the host paints.
  */
 export function SharedMetricsConsentStrip() {
   const { requestGateway } = useGatewayRequest()
   const { t } = useI18n()
   const copy = t.sharedMetrics
   const profile = normalizeProfileKey(useStore($activeGatewayProfile))
-  const reask = useStore($sharedMetricsConsent)?.reask === true
+  const consent = useStore($sharedMetricsConsent)
+  const body = consent?.reask ? (consent.enabled ? copy.stripReaskLocalBody : copy.stripReaskBody) : copy.stripBody
   const [saving, setSaving] = useState(false)
 
   const scopedRequest = useMemo(() => sharedMetricsProfileRequester(requestGateway, profile), [profile, requestGateway])
@@ -79,7 +82,7 @@ export function SharedMetricsConsentStrip() {
     >
       <span className="min-w-0 truncate text-[0.73rem] leading-4 text-foreground/92">
         <span className="font-medium">{copy.consentTitle}</span>
-        <span className="text-muted-foreground/80"> {reask ? copy.stripReaskBody : copy.stripBody}</span>
+        <span className="text-muted-foreground/80"> {body}</span>
       </span>
     </StatusRow>
   )

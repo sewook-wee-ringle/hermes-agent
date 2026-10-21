@@ -1,11 +1,15 @@
 """The one shared-metrics consent answer, and the terminal's first-run offer.
 
 Every surface reads and writes the same two keys in the profile's config.yaml:
-``telemetry.shared_metrics.enabled`` (collect locally) and ``.send`` (upload daily). The question
-counts as answered once either key is written explicitly; the shipped defaults are not an answer.
-Every answer also writes ``offer_version``. A "No thanks" without it predates the type-ahead fix
-(an Enter pressed during startup could save it unseen), so that profile is asked once more, with
-the reason, and any response (Esc or dismiss included) settles it for good.
+``telemetry.shared_metrics.enabled`` (collect) and ``.send`` (upload daily). The offer has two
+answers, and each sets both keys: "Share with Nous" turns both on, "No thanks" turns both off. The
+question counts as answered once either key is written explicitly; the shipped defaults are not an
+answer. Every answer also writes ``offer_version``, and two older answers are asked once more, with
+the reason, where any response (Esc or dismiss included) settles it for good:
+- a "No thanks" without ``offer_version`` predates the type-ahead fix (an Enter pressed during
+  startup could save it unseen);
+- a "keep it on this computer" answer (collect, never send) from before version 3, when the offer
+  dropped that answer. Esc or dismiss on this re-ask turns collection off.
 Desktop paints the offer as a composer strip (``consent-strip.tsx`` over the ``shared_metrics.*``
 RPCs). The terminal asks at the end of every ``hermes setup`` flow and, for a profile that never
 answered, once before an interactive ``hermes`` / ``hermes --tui`` chat (which also covers the
@@ -22,10 +26,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# (label, enabled, send): the Desktop strip's three equal answers, in its order.
+# (label, enabled, send): the offer's two answers, in the order every surface shows them.
 OFFER_CHOICES = (
-    ("Collect and send to Nous", True, True),
-    ("Collect locally only", True, False),
+    ("Share with Nous", True, True),
     ("No thanks", False, False),
 )
 _NO_THANKS = len(OFFER_CHOICES) - 1
@@ -33,16 +36,15 @@ DOCS_URL = "https://hermes-agent.nousresearch.com/docs/developer-guide/relay-sha
 _OFFER_DESCRIPTION = "\n".join((
     "Shared metrics are bounded counters: activity, outcomes, error classes (with a",
     "fixed-list reason when a memory write, compression, update or install fails),",
-    "model routes, token totals, feature use and coarse machine facts. A failed or",
-    "finished fresh install is noted on this machine and counted only if you opt in.",
-    "Never prompts, files, paths,",
-    "setting values or error text. Collection stays on this machine; sending to Nous is",
-    "a separate choice, and apart from that install note, data from before you opt in",
-    "is never sent.",
+    "model routes, token totals, feature use and coarse machine facts. Never prompts,",
+    "files, paths, setting values or error text. Sharing sends them to Nous once a",
+    "day. Apart from a one-time install note, data from before you opt in is never",
+    "sent.",
     f"Details: {DOCS_URL}",
     "Change it any time: hermes setup telemetry",
 ))
 _REASK_NOTE = "Asking once more: an earlier version could save \"No thanks\" before you saw this question."
+_REASK_LOCAL_NOTE = "Asking once more: Hermes no longer keeps shared metrics only on this machine."
 
 
 def _section(cfg: Any) -> dict:
@@ -51,21 +53,31 @@ def _section(cfg: Any) -> dict:
     return section if isinstance(section, dict) else {}
 
 
-# Bumped only when every earlier answer must be asked again; 2 = after the type-ahead fix.
-OFFER_VERSION = 2
+# Written with every answer. 2 = after the type-ahead fix; 3 = after the offer dropped the
+# collect-only answer.
+OFFER_VERSION = 3
+
+
+def _offer_version(section: dict) -> int:
+    version = section.get("offer_version")
+    return version if isinstance(version, int) and not isinstance(version, bool) else 0
 
 
 def consent_state(raw_cfg: Any) -> dict:
-    """``{enabled, send, decided, reask}`` from a RAW config mapping (no defaults merged). ``reask``:
-    an "off" answer from before ``OFFER_VERSION`` that may never have been seen; it reads undecided
-    so every surface offers it once more. An opt-in was always a deliberate pick and stays."""
+    """``{enabled, send, decided, reask}`` from a RAW config mapping (no defaults merged). ``reask``
+    reads undecided so every surface offers it once more: an "off" answer from before version 2
+    that may never have been seen (``enabled`` false), or a collect-only answer from before version
+    3 (``enabled`` true), which the offer no longer has. A collect-only answer written at version 3
+    came from an older client and stays. An opt-in to sending was always a deliberate pick and stays."""
     section = _section(raw_cfg)
     enabled = section.get("enabled") is True
+    send = enabled and section.get("send") is True
     answered = "enabled" in section or "send" in section
-    reask = answered and not enabled and section.get("offer_version") != OFFER_VERSION
+    version = _offer_version(section)
+    reask = answered and ((not enabled and version < 2) or (enabled and not send and version < 3))
     return {
         "enabled": enabled,
-        "send": enabled and section.get("send") is True,
+        "send": send,
         "decided": answered and not reask,
         "reask": reask,
     }
@@ -119,30 +131,41 @@ def save_consent(enabled: bool, send: bool, config: dict | None = None) -> None:
         purge_pending_receipts(get_hermes_home())
 
 
-def offer_consent(config: dict | None = None, *, reask: bool = False) -> bool:
-    """Ask once, with the Desktop strip's three answers; "No thanks" is the default so Enter never
-    opts anyone in. Esc leaves a first question open (asked again next time); on a re-ask it keeps
-    the recorded "No thanks", so nobody is asked a third time. True when answered."""
+def _reask_reason(state: dict) -> str | None:
+    """Which older answer a re-ask covers: ``"local"`` (collect-only, enabled) or ``"off"``."""
+    if not state.get("reask"):
+        return None
+    return "local" if state.get("enabled") else "off"
+
+
+def offer_consent(config: dict | None = None, *, reask: bool | str | None = None) -> bool:
+    """Ask once, with the offer's two answers; "No thanks" is the default so Enter never opts
+    anyone in. Esc leaves a first question open (asked again next time). On a re-ask (``"off"``, or
+    True, for an unseen "No thanks"; ``"local"`` for a retired collect-only answer) Esc saves "No
+    thanks", so nobody is asked a third time. True when answered."""
     from hermes_cli.cli_output import print_info, print_success
     from hermes_cli.curses_ui import curses_radiolist, flush_stdin
 
+    reask = "off" if reask is True else reask or None
+    note = {"off": _REASK_NOTE, "local": _REASK_LOCAL_NOTE}.get(reask)
     # The offer appears seconds into startup; an Enter typed while Hermes booted would otherwise
     # answer it ("No thanks") before it was ever on screen, so the user was never really asked.
     flush_stdin()
     idx = curses_radiolist(
         "Help improve Hermes?", [label for label, _, _ in OFFER_CHOICES], selected=_NO_THANKS, cancel_returns=-1,
-        description=f"{_REASK_NOTE}\n{_OFFER_DESCRIPTION}" if reask else _OFFER_DESCRIPTION,
+        description=f"{note}\n{_OFFER_DESCRIPTION}" if note else _OFFER_DESCRIPTION,
     )
     if idx < 0 and reask:
         save_consent(False, False, config)
-        print_info("Kept \"No thanks\". Change it any time with `hermes setup telemetry`.")
+        kept = "Kept \"No thanks\"." if reask == "off" else "Shared metrics off."
+        print_info(f"{kept} Change it any time with `hermes setup telemetry`.")
         return True
     if idx < 0:
         print_info("Not answered; Hermes will ask again. Decide any time with `hermes setup telemetry`.")
         return False
     _, enabled, send = OFFER_CHOICES[idx]
     save_consent(enabled, send, config)
-    outcome = "collected and sent to Nous" if send else "collected on this machine only" if enabled else "off"
+    outcome = "sent to Nous once a day" if send else "off"
     print_success(f"Shared metrics {outcome}. Change it any time with `hermes setup telemetry`.")
     return True
 
@@ -159,7 +182,7 @@ def offer_consent_if_undecided(config: dict | None = None) -> None:
     if state["decided"]:
         return
     try:
-        offer_consent(config, reask=state["reask"])
+        offer_consent(config, reask=_reask_reason(state))
     except (KeyboardInterrupt, EOFError):
         print()
 
@@ -183,7 +206,7 @@ def offer_consent_before_chat(args: Any) -> None:
         state = _current_state()
         if state["decided"]:
             return
-        offer_consent(reask=state["reask"])
+        offer_consent(reask=_reask_reason(state))
     except (KeyboardInterrupt, EOFError):
         print()
     except Exception:

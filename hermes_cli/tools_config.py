@@ -931,9 +931,10 @@ def _shared_metrics_state(config: dict) -> tuple[bool, bool]:
 
 
 def _shared_metrics_menu_label(config: dict) -> str:
-    """Menu row for shared metrics, showing both consent states."""
+    """Menu row for shared metrics. Collect-only is a retired answer an older client can still
+    have written; the row names it rather than reading "off" while collection runs."""
     enabled, send = _shared_metrics_state(config)
-    state = "off" if not enabled else ("collecting + sending to Nous" if send else "collecting locally")
+    state = "off" if not enabled else ("sending to Nous" if send else "collecting locally")
     return f"Configure shared metrics  ({state})"
 
 

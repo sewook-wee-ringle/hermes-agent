@@ -766,8 +766,11 @@ telemetry:
 - Like `enabled`, `send` is profile-owned and is not overridden by
   managed-scope configuration.
 
-Both keys are asked once per profile, with the same three answers everywhere
-(Send to Nous / Local only / No thanks):
+Both keys are asked once per profile, with the same two answers everywhere
+(Share with Nous / No thanks). Each answer sets both keys: "Share with Nous"
+writes `enabled: true, send: true`, "No thanks" writes both false. The keys stay
+separate so the sender keeps its own gate, and a hand-edited config can still
+collect without sending; no consent surface offers that combination.
 
 | Surface | Where the offer appears |
 | --- | --- |
@@ -783,14 +786,22 @@ first-run onboarding is finished or skipped. Answering on any surface writes bot
 to the profile's `config.yaml`, plus `offer_version`, and a profile that already
 carries either key is never asked again. A managed install is never offered.
 
-One exception: before the type-ahead fix, an Enter pressed while `hermes chat`
-was starting could save "No thanks" before the question appeared. A "No thanks"
-recorded without `offer_version` is therefore offered once more on every surface,
-with a note saying why. Any response settles it for good, including Esc or the
-banner's ✕, which keep "No thanks". Answers that opted in are never re-asked.
-To change the answer
+Two older answers are offered once more on every surface, with a note saying
+why, and any response settles them for good, including Esc or the banner's ✕,
+which save "No thanks":
+
+- Before the type-ahead fix, an Enter pressed while `hermes chat` was starting
+  could save "No thanks" before the question appeared. A "No thanks" recorded
+  without `offer_version` is asked again.
+- Until `offer_version: 3` the offer had a third answer that collected without
+  sending ("Local only" / "Keep on this computer"). A profile holding that
+  answer from an earlier version is asked again with the two answers. A
+  collect-only answer written at version 3 (an older client against a newer
+  backend) stays.
+
+Answers that opted in to sending are never re-asked. To change the answer
 later, use `hermes setup telemetry`, `hermes tools`, or Desktop's Settings ›
-Safety › Privacy & network.
+Safety › Privacy & network; each offers the same single on/off choice.
 
 **A package is only sent when its whole period falls inside a recorded
 consent window.** Consent is stored as explicit intervals in the shared-

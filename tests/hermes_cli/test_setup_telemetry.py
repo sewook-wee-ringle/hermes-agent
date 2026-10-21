@@ -13,16 +13,39 @@ def test_shared_metrics_are_registered_disabled_by_default():
     assert DEFAULT_CONFIG["telemetry"]["shared_metrics"]["enabled"] is False
 
 
-def test_setup_telemetry_enables_shared_metrics(monkeypatch):
-    config = {}
+def test_setup_telemetry_one_answer_sets_both_keys(monkeypatch):
+    """One question: yes collects and sends, no turns both off. Collect-only is not offered."""
+    asked = []
     monkeypatch.setattr(
         "hermes_cli.setup.prompt_yes_no",
-        lambda _question, default: not default,
+        lambda question, default: asked.append(question) or not default,
     )
+    config = {}
+
+    setup_telemetry(config)
+    assert config["telemetry"]["shared_metrics"]["enabled"] is True
+    assert config["telemetry"]["shared_metrics"]["send"] is True
+
+    setup_telemetry(config)
+    assert config["telemetry"]["shared_metrics"]["enabled"] is False
+    assert config["telemetry"]["shared_metrics"]["send"] is False
+    assert asked == ["Send shared metrics to Nous?"] * 2
+
+
+def test_setup_telemetry_defaults_a_collect_only_profile_to_no(monkeypatch):
+    """A retired collect-only answer is not sharing: the question defaults to no, and no turns
+    collection off too."""
+    defaults = []
+    monkeypatch.setattr(
+        "hermes_cli.setup.prompt_yes_no",
+        lambda _question, default: defaults.append(default) or default,
+    )
+    config = {"telemetry": {"shared_metrics": {"enabled": True, "send": False}}}
 
     setup_telemetry(config)
 
-    assert config["telemetry"]["shared_metrics"]["enabled"] is True
+    assert defaults == [False]
+    assert config["telemetry"]["shared_metrics"]["enabled"] is False
 
 
 def test_disabling_collection_closes_the_send_consent_window(monkeypatch, tmp_path):
@@ -86,13 +109,15 @@ def test_no_answer_survives_the_callers_later_config_save(monkeypatch):
     """A "no" equals the shipped defaults; saved only through ``save_config`` it was stripped, so
     the profile read undecided and every surface (Desktop strip, CLI offer) asked again."""
     from hermes_cli.config import load_config, read_raw_config, save_config
+    from hermes_cli.observability import shared_metrics_consent as consent
 
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda _question, default: False)
     config = load_config()
     setup_telemetry(config)
     save_config(config)  # what the wizard and `hermes tools` do afterwards
 
-    assert read_raw_config()["telemetry"]["shared_metrics"] == {"enabled": False, "send": False, "offer_version": 2}
+    assert read_raw_config()["telemetry"]["shared_metrics"] == {
+        "enabled": False, "send": False, "offer_version": consent.OFFER_VERSION}
 
 
 def test_chat_offer_asks_an_undecided_profile_once(monkeypatch):
@@ -100,7 +125,7 @@ def test_chat_offer_asks_an_undecided_profile_once(monkeypatch):
     from hermes_cli.observability import shared_metrics_consent as consent
 
     asked = []
-    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", lambda *a, **k: asked.append(a) or 1)
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", lambda *a, **k: asked.append(a) or 0)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
@@ -112,7 +137,8 @@ def test_chat_offer_asks_an_undecided_profile_once(monkeypatch):
     consent.offer_consent_before_chat(argparse.Namespace())
 
     assert len(asked) == 1
-    assert consent.consent_state(read_raw_config()) == {"enabled": True, "send": False, "decided": True, "reask": False}
+    assert asked[0][1] == ["Share with Nous", "No thanks"]
+    assert consent.consent_state(read_raw_config()) == {"enabled": True, "send": True, "decided": True, "reask": False}
 
 
 def test_offer_drops_keys_typed_before_it_appeared(monkeypatch):
@@ -130,7 +156,7 @@ def test_offer_drops_keys_typed_before_it_appeared(monkeypatch):
 
 def test_unseen_no_thanks_is_asked_once_more_and_then_settled(monkeypatch):
     """A pre-fix "No thanks" is re-offered with the reason; Esc on the re-ask keeps it for good,
-    while a pre-fix opt-in was a deliberate pick and is never re-asked."""
+    while a pre-fix opt-in to sending was a deliberate pick and is never re-asked."""
     from hermes_cli.config import read_raw_config, save_config
     from hermes_cli.observability import shared_metrics_consent as consent
 
@@ -141,7 +167,13 @@ def test_unseen_no_thanks_is_asked_once_more_and_then_settled(monkeypatch):
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
     monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
 
-    save_config({"telemetry": {"shared_metrics": {"enabled": True, "send": False}}}, strip_defaults=False)
+    save_config({"telemetry": {"shared_metrics": {"enabled": True, "send": True}}}, strip_defaults=False)
+    consent.offer_consent_before_chat(argparse.Namespace())
+    assert shown == []
+
+    # An "off" written at version 2 (after the type-ahead fix) was seen: it stays.
+    save_config({"telemetry": {"shared_metrics": {"enabled": False, "send": False, "offer_version": 2}}},
+                strip_defaults=False)
     consent.offer_consent_before_chat(argparse.Namespace())
     assert shown == []
 
@@ -151,6 +183,43 @@ def test_unseen_no_thanks_is_asked_once_more_and_then_settled(monkeypatch):
 
     assert len(shown) == 1 and shown[0].startswith(consent._REASK_NOTE)
     assert consent.consent_state(read_raw_config()) == {"enabled": False, "send": False, "decided": True, "reask": False}
+
+
+def test_retired_collect_only_answer_is_asked_once_more_and_esc_turns_it_off(monkeypatch):
+    """The offer dropped "Collect locally only": a profile holding it from an earlier version is
+    asked once more with its own note, and Esc saves "No thanks" (collection off), not the old
+    answer, so nobody is asked a third time."""
+    from hermes_cli.config import read_raw_config, save_config
+    from hermes_cli.observability import shared_metrics_consent as consent
+
+    shown = []
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", lambda *a, **k: shown.append(k["description"]) or -1)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+    for version in (None, 2):
+        section = {"enabled": True, "send": False} | ({"offer_version": version} if version else {})
+        save_config({"telemetry": {"shared_metrics": section}}, strip_defaults=False)
+        assert consent.consent_state(read_raw_config()) == {
+            "enabled": True, "send": False, "decided": False, "reask": True}
+        consent.offer_consent_before_chat(argparse.Namespace())
+        consent.offer_consent_before_chat(argparse.Namespace())
+        assert consent.consent_state(read_raw_config()) == {
+            "enabled": False, "send": False, "decided": True, "reask": False}
+
+    assert len(shown) == 2 and all(text.startswith(consent._REASK_LOCAL_NOTE) for text in shown)
+
+
+def test_collect_only_answer_written_at_the_current_version_stays():
+    """An older client can still write collect-only through a newer backend; re-asking it would
+    loop that client's strip forever, so the current version settles it."""
+    from hermes_cli.observability import shared_metrics_consent as consent
+
+    section = {"enabled": True, "send": False, "offer_version": consent.OFFER_VERSION}
+    assert consent.consent_state({"telemetry": {"shared_metrics": section}}) == {
+        "enabled": True, "send": False, "decided": True, "reask": False}
 
 
 def test_every_cli_promise_that_pre_opt_in_data_stays_local_names_the_install_note():

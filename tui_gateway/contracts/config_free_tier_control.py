@@ -262,8 +262,9 @@ method("free_tier.claim_nudge", params=ProfileParams, result=FreeTierClaimNudgeR
 class SharedMetricsConsentResult(Result):
     """The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while
     ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults
-    are not an answer) and it is not a ``reask``: an "off" from before the type-ahead fix, offered
-    once more with the reason."""
+    are not an answer) and it is not a ``reask``: an older answer offered once more with the reason,
+    either an "off" from before the type-ahead fix (``enabled`` false) or a retired collect-only
+    answer (``enabled`` true, ``send`` false)."""
 
     enabled: bool
     send: bool

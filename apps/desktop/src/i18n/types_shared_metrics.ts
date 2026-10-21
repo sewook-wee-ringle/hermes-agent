@@ -13,16 +13,14 @@ export interface SharedMetricsTranslations {
   sending: string
   readDocs: string
   share: string
-  local: string
   off: string
   saveFailed: string
-  collectLabel: string
-  collectDesc: string
   sendLabel: string
   sendDesc: string
   unavailable: string
   stripBody: string
   stripReaskBody: string
-  stripChoices: { share: string; local: string; off: string }
+  stripReaskLocalBody: string
+  stripChoices: { share: string; off: string }
   stripDetails: string
 }
